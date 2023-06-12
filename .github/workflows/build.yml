@@ -1,0 +1,67 @@
+name: Build and Release
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake g++ libnetfilter-queue-dev
+
+      - name: Get Latest Git Tag
+        id: get-tag
+        run: |
+          tag=$(git describe --abbrev=0 --tags || echo "v0.0.0")
+          echo "tag=${tag}" >> $GITHUB_OUTPUT
+
+      - name: Generate Version
+        id: version
+        run: |
+          tag="${{ steps.get-tag.outputs.tag }}"
+          versionParts=(${tag//./ })
+          newVersion="${versionParts[0]}.${versionParts[1]}.$((${versionParts[2]}+1))"
+          echo "version=${newVersion}" >> $GITHUB_OUTPUT
+
+      - name: Build Project
+        run: |
+          mkdir build
+          cd build
+          cmake -D VERSION=${{ steps.version.outputs.version }} ..
+          make
+
+      - name: Create Release
+        id: create-release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          release_name: Release ${{ steps.version.outputs.version }}
+          body: |
+            Release notes for version ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create-release.outputs.upload_url }}
+          asset_path: ./build/pqc-dns-sidecar
+          asset_name: pqc-dns-sidecar-linux-amd64
+          asset_content_type: application/octet-stream

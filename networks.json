@@ -1,7 +1,0 @@
-{ "networks":
-	[ { "name": "internal_net",
-	    "subnet": "172.20.0.0/16",
-	    "gateway": "172.20.0.1" },
-	  { "name": "external_net",
-	    "subnet": "42.42.42.0/16",
-	    "gateway": "42.42.42.1" } ] }
