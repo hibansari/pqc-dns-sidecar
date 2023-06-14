@@ -1774,27 +1774,23 @@ void refresh_state(void) {
   refresh_hashmap(&requester_state);
 }
 
-int main(int argc, char **argv) {
-  char *ipaddr;
-  if (argc < 2 || argc > 5) {
-    printf("Wrong number of arguments.\n");
-    return -1;
+int main() {
+  char *ipaddr = getenv("SIDECAR_IP_ADDRESS");
+  if (ipaddr == NULL) {
+    printf("SIDECAR_IP_ADDRESS not specified\n");
+    exit(-1);
   }
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--is_resolver") == 0) {
-      printf("Is a resolver\n");
-      is_resolver = true;
-    } else if (strcmp(argv[i], "--bypass") == 0) {
-      printf("bypassing daemon\n");
-      BYPASS = true;
-    } else if (strcmp(argv[i], "--maxudp") == 0) {
-      i++;
-      MAXUDP = atoi(argv[i]);
-      printf("Using maxudp: %u\n", MAXUDP);
-    } else {
-      ipaddr = argv[i];
-    }
+
+  if (getenv("SIDECAR_RESOLVER_ENABLED")) {
+    is_resolver = true;
   }
+  if (getenv("SIDECAR_BYPASS_ENABLED")) {
+    BYPASS = true;
+  }
+  if (getenv("SIDECAR_MAX_UDP_SIZE")) {
+    MAXUDP = atoi(getenv("SIDECAR_MAX_UDP_SIZE"));
+  }
+  
   printf("Starting daemon...\n");
   size_t buff_size = 0xffff;
   char buf[buff_size];
