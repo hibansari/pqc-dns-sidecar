@@ -1551,90 +1551,51 @@ uint32_t process_dns_message(struct nfq_q_handle *qh, uint32_t id,
   return NF_ACCEPT;
 }
 
-uint32_t process_tcp(struct nfq_q_handle *qh, uint32_t id,
-                     struct iphdr *ipv4hdr, unsigned char *payload,
-                     size_t payloadLen) {
-  struct tcphdr *tcphdr = (struct tcphdr *)((char *)payload + sizeof(*ipv4hdr));
-  uint16_t src_port = ntohs(tcphdr->source);
-  uint16_t dst_port = ntohs(tcphdr->dest);
-  // printf("tcp: <src: %u:%hu, dest: %u:%hu, total size: %lu>\n",
-  // ipv4hdr->saddr, src_port, ipv4hdr->daddr, dst_port, payloadLen);
-  // fflush(stdout);
-  return NF_ACCEPT;
-  return process_dns_message(qh, id, payload, payloadLen, ipv4hdr, tcphdr,
-                             true);
-}
-
 uint32_t process_udp(struct nfq_q_handle *qh, uint32_t id,
                      struct iphdr *ipv4hdr, unsigned char *payload,
                      size_t payloadLen) {
-  struct udphdr *udphdr = (struct udphdr *)((char *)payload + sizeof(*ipv4hdr));
-  uint16_t src_port = ntohs(udphdr->source);
-  uint16_t dst_port = ntohs(udphdr->dest);
-  // printf("<src: %u:%hu, dest: %u:%hu, total size: %lu>\n", ipv4hdr->saddr,
-  // src_port, ipv4hdr->daddr, dst_port, payloadLen); fflush(stdout);
   if (BYPASS) {
     return NF_ACCEPT;
   }
+  struct udphdr *udphdr = (struct udphdr *)((char *)payload + sizeof(*ipv4hdr));
   return process_dns_message(qh, id, payload, payloadLen, ipv4hdr, udphdr,
                              false);
 }
 
 uint32_t process_packet(struct nfq_q_handle *qh, struct nfq_data *data,
                         uint32_t **verdict) {
-  // For the sake of testing getting this to work in docker containers
-  // this is just going to print packet header info if it's a packet
-  // addressed to this machine
-
-  size_t payloadLen = 0;
   unsigned char *payload = NULL;
-  struct iphdr *ipv4hdr;
-  struct icmphdr *icmphdr;
-  uint32_t id = 0;
-  struct nfqnl_msg_packet_hdr *ph;
-  payloadLen = nfq_get_payload(data, &payload);
-  ipv4hdr = (struct iphdr *)payload;
-  ph = nfq_get_msg_packet_hdr(data);
-  id = ntohl(ph->packet_id);
+  size_t payload_length = nfq_get_payload(data, &payload);
 
-  uint32_t dst_ip = ipv4hdr->daddr;
-  uint32_t src_ip = ipv4hdr->saddr;
+  struct nfqnl_msg_packet_hdr *pkthdr = nfq_get_msg_packet_hdr(data);
+  uint32_t id = ntohl(pkthdr->packet_id);
+
+  struct iphdr *iphdr = (struct iphdr *)payload;
+  uint32_t src_ip = iphdr->saddr;
+  uint32_t dst_ip = iphdr->daddr;
+
   uint32_t res;
+
   if (dst_ip == our_addr || src_ip == our_addr) {
-    if (ipv4hdr->protocol == IPPROTO_TCP) {
-      res = process_tcp(qh, id, ipv4hdr, payload, payloadLen);
-    } else if (ipv4hdr->protocol == IPPROTO_UDP) {
-      res = process_udp(qh, id, ipv4hdr, payload, payloadLen);
-    } else if (ipv4hdr->protocol == IPPROTO_ICMP) {
-      icmphdr = (struct icmphdr *)((char *)payload + sizeof(*ipv4hdr));
-      // printf("<type: %hhu, code: %hhu src: %u dest: %u>\n", icmphdr->type,
-      // icmphdr->code, ipv4hdr->saddr, ipv4hdr->daddr);
+    if (iphdr->protocol == IPPROTO_UDP) {
+      res = process_udp(qh, id, iphdr, payload, payload_length);
     } else {
       res = NF_ACCEPT;
     }
-  } else if (ipv4hdr->protocol == IPPROTO_UDP) {
-    struct udphdr *udphdr =
-        (struct udphdr *)((char *)payload + sizeof(*ipv4hdr));
-    uint16_t src_port = ntohs(udphdr->source);
-    uint16_t dst_port = ntohs(udphdr->dest);
-    // printf("<src: %u:%hu, dest: %u:%hu, total size: %lu>\n", ipv4hdr->saddr,
-    // src_port, ipv4hdr->daddr, dst_port, payloadLen);
+  } else if (iphdr->protocol == IPPROTO_UDP) {
+    res = NF_DROP;
+  } else if (iphdr->protocol == IPPROTO_ICMP) {
     res = NF_DROP;
   } else {
-    printf("Packet type: %hhu\n", ipv4hdr->protocol);
-    if (ipv4hdr->protocol == IPPROTO_ICMP) {
-      icmphdr = (struct icmphdr *)((char *)payload + sizeof(*ipv4hdr));
-      printf("<type: %hhu, code: %hhu src: %u dest: %u>\n", icmphdr->type,
-             icmphdr->code, ipv4hdr->saddr, ipv4hdr->daddr);
-      res = NF_DROP;
-    } else {
-      res = NF_ACCEPT;
-    }
+    res = NF_ACCEPT;
   }
+
   **verdict = res;
+
   if (res == 0xFFFF) {
     return 0;
   }
+
   return id;
 }
 
