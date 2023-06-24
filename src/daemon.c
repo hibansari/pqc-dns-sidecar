@@ -136,14 +136,6 @@ bool init_partialdnsmessage(PartialDNSMessage **msg) {
   return true;
 }
 
-bool section_is_done(PartialRR **section, uint16_t section_count) {
-  bool res = true;
-  for (uint16_t i = 0; i < section_count; i++) {
-    res = res && (section[i]->blocks_received == section[i]->expected_blocks);
-  }
-  return res;
-}
-
 PartialRR *find_partialrr(PartialDNSMessage *pm, uint16_t rrid,
                           uint8_t *section) {
   if (pm == NULL) {
@@ -381,55 +373,6 @@ bool construct_intermediate_message(DNSMessage *in, DNSMessage **out) {
   return update_max_udp(*out, 65535U);
 }
 
-uint64_t calculate_size_needed(DNSMessage *msg) {
-  uint64_t total_size = 12; // Start at 12 to include header size
-  for (uint16_t i = 0; i < msg->qdcount; i++) {
-    // Should never get here, so let's error
-    assert("We should never get here because we aren't handling queries" ==
-           false);
-  }
-
-  for (uint16_t i = 0; i < msg->ancount; i++) {
-    if (msg->answers_section[i]->isRRFrag) {
-      total_size += msg->answers_section[i]->data.rrfrag->rrsize;
-    } else {
-      unsigned char *tmp_res;
-      size_t out_len;
-      resource_record_to_bytes(msg->answers_section[i]->data.rr, &tmp_res,
-                               &out_len);
-      total_size += out_len;
-      free(tmp_res);
-    }
-  }
-
-  for (uint16_t i = 0; i < msg->nscount; i++) {
-    if (msg->authoritative_section[i]->isRRFrag) {
-      total_size += msg->authoritative_section[i]->data.rrfrag->rrsize;
-    } else {
-      unsigned char *tmp_res;
-      size_t out_len;
-      resource_record_to_bytes(msg->authoritative_section[i]->data.rr, &tmp_res,
-                               &out_len);
-      total_size += out_len;
-      free(tmp_res);
-    }
-  }
-
-  for (uint16_t i = 0; i < msg->arcount; i++) {
-    if (msg->additional_section[i]->isRRFrag) {
-      total_size += msg->additional_section[i]->data.rrfrag->rrsize;
-    } else {
-      unsigned char *tmp_res;
-      size_t out_len;
-      resource_record_to_bytes(msg->additional_section[i]->data.rr, &tmp_res,
-                               &out_len);
-      total_size += out_len;
-      free(tmp_res);
-    }
-  }
-  return total_size;
-}
-
 // From The Practice of Programming
 uint16_t hash_16bit(unsigned char *in, size_t in_len) {
   uint16_t h;
@@ -523,9 +466,6 @@ void generic_send(int fd, unsigned char *bytes, size_t byte_len) {
   }
 }
 
-void generic_recv(int fd, unsigned char *buff, size_t *bufflen) {
-  *bufflen = recv(fd, buff, *bufflen, 0);
-}
 // The internal packet functions are to get around an issue
 // where netfilter queue prevents packets between the daemon
 // and dns server from being sent. There is probably a better
@@ -952,8 +892,6 @@ void pack_section(PackedRR ***packed_rrfrags, PartialRR **section,
   *cur_message_size = cursize;
   *rrfrag_count = _rrfrag_count;
 }
-
-void refresh_hashmap(hashmap **map);
 
 void requester_thread(DNSMessage *msg, struct iphdr *iphdr,
                       void *transport_header, bool is_tcp) {
@@ -1705,20 +1643,9 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
   uint32_t verdict;
   uint32_t *verdict_p = &verdict;
   uint32_t id = process_packet(qh, nfa, &verdict_p);
-  if (*verdict_p == 0xFFFF) {
-    // printf("Got singal to not submit a verdict\n");
-    // fflush(stdout);
+  if (*verdict_p == 0xFFFF)
     return 0;
-  }
   verdict = *verdict_p;
-  if (verdict == NF_DROP) {
-    // printf("dropping packet\n");
-    // fflush(stdout);
-  }
-  if (verdict == NF_ACCEPT) {
-    // printf("accepting packet\n");
-    // fflush(stdout);
-  }
   if (nfq_set_verdict(qh, id, verdict, 0, NULL) < 0) {
     printf("Verdict error\n");
     fflush(stdout);
@@ -1732,50 +1659,9 @@ int get_addr(char *ipaddr) {
   return 0;
 }
 
-void free_key(void *key, size_t ksize, uintptr_t value, void *usr) {
-  free(key);
-}
-
-void refresh_shared_map(shared_map **map) {
-  if (map == NULL)
-    return;
-  shared_map *m = *map;
-  if (m != NULL) {
-    sem_wait(&(m->lock));
-    hashmap_iterate(m->map, free_key, NULL);
-    hashmap_free(m->map);
-    m->map = hashmap_create();
-    sem_post(&(m->lock));
-  } else {
-    init_shared_map(m);
-  }
-  *map = m;
-}
-
-void refresh_hashmap(hashmap **map) {
-  if (map == NULL)
-    return;
-  hashmap *m = *map;
-  if (m != NULL) {
-    hashmap_iterate(m, free_key, NULL);
-    hashmap_free(m);
-  }
-  m = hashmap_create();
-  *map = m;
-}
-
-void refresh_state(void) {
-  shared_map *rcp;
-  shared_map *cip;
-  rcp = &responder_cache;
-  cip = &connection_info;
-  refresh_shared_map(&rcp);
-  refresh_shared_map(&cip);
-  refresh_hashmap(&requester_state);
-}
-
 int main() {
   char *ipaddr = getenv("SIDECAR_IP_ADDRESS");
+
   if (ipaddr == NULL) {
     printf("SIDECAR_IP_ADDRESS not specified\n");
     exit(-1);
@@ -1784,13 +1670,15 @@ int main() {
   if (getenv("SIDECAR_RESOLVER_ENABLED")) {
     is_resolver = true;
   }
+
   if (getenv("SIDECAR_BYPASS_ENABLED")) {
     BYPASS = true;
   }
+
   if (getenv("SIDECAR_MAX_UDP_SIZE")) {
     MAXUDP = atoi(getenv("SIDECAR_MAX_UDP_SIZE"));
   }
-  
+
   printf("Starting daemon...\n");
   size_t buff_size = 0xffff;
   char buf[buff_size];
