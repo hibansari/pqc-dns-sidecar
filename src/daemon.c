@@ -475,56 +475,6 @@ bool is_internal_packet(struct iphdr *iphdr) {
 // assume it is passing information between the daemon and either the requester
 // or receiver
 
-bool internal_send(int fd, unsigned char *bytes, size_t byte_len,
-                   struct iphdr *iphdr, void *transport_header,
-                   uint16_t question_hash, char *qname) {
-  printf("[pqc-dns-sidecar] sidecar re-sent dropped query for name: '%s'.\n",
-         qname);
-  generic_send(fd, bytes, byte_len);
-  struct sockaddr_in sin;
-  memset(&sin, 0, sizeof(sin));
-  socklen_t len = sizeof(sin);
-  if (getsockname(fd, (struct sockaddr *)&sin, &len) == -1) {
-    perror("getsockname");
-    exit(-1);
-  }
-  uint16_t src_port;
-  src_port = ntohs(sin.sin_port);
-  conn_info *ci = malloc(sizeof(conn_info));
-  ci->fd = fd;
-  ci->is_tcp = false;
-  ci->transport_header = malloc(sizeof(struct udphdr));
-  memcpy(ci->transport_header, transport_header, sizeof(struct udphdr));
-  ci->iphdr = malloc(sizeof(struct iphdr));
-  memcpy(ci->iphdr, iphdr, sizeof(struct iphdr));
-  uintptr_t test;
-  uint64_t *question_hash_port = malloc(sizeof(uint64_t));
-  memset(question_hash_port, 0, sizeof(uint64_t));
-  uint32_t *qh = (uint32_t *)question_hash_port;
-  *qh = question_hash;
-  *(qh + 1) = src_port;
-  if (hashmap_get(connection_info.map, question_hash_port, sizeof(uint64_t),
-                  (uintptr_t *)&test)) {
-    printf("Something is already there...\n");
-    fflush(stdout);
-    assert(false);
-    exit(-1);
-  }
-  hashmap_set(connection_info.map, question_hash_port, sizeof(uint64_t),
-              (uintptr_t)ci);
-  if (!hashmap_get(connection_info.map, question_hash_port, sizeof(uint64_t),
-                   (uintptr_t *)&ci)) {
-    printf("Failed to add connection info to hashmap\n");
-    fflush(stdout);
-    exit(-1);
-  }
-  printf(
-      "[pqc-dns-sidecar] saved connection information for client that queried "
-      "name: '%s' so that we can send fragments once we get a response.\n",
-      qname);
-  return true;
-}
-
 // Going to need to use raw sockets when responding to an rrfrag request
 // so that the sorce destination and ports match up
 
@@ -1021,27 +971,66 @@ void request_next_fragment(
   close(fd);
 }
 
-void responding_thread_start(DNSMessage *imsg, struct iphdr *iphdr, void *transport_hdr) {
-  // open socket using the same protocol as used for the request
-  int fd;
-  uint32_t dst_ipaddr = iphdr->daddr;
-  uint16_t dst_port = ((struct udphdr *)transport_hdr)->dest;
-  unsigned char *imsg_bytes;
-  size_t imsg_size;
-  dns_message_to_bytes(imsg, &imsg_bytes, &imsg_size);
-  uint16_t question_hash;
-  if (imsg->qdcount == 1) /* it should always be one */ {
-    unsigned char *qout;
-    size_t qout_size;
-    question_to_bytes(imsg->question_section[0], &qout, &qout_size);
-    question_hash = hash_16bit(qout, qout_size);
-  } else {
-    assert(false);
+void responding_thread_start(DNSMessage *message, struct iphdr *ip_header, void *transport_header) {
+  if (message->qdcount != 1) {
+    log_error("qdcount should always be one, exiting");
+    exit(-1);
   }
-  create_generic_socket(dst_ipaddr, dst_port, &fd);
-  internal_send(fd, imsg_bytes, imsg_size, iphdr, transport_hdr, question_hash,
-                imsg->question_section[0]->qname);
-  dns_message_destroy(&imsg);
+
+  // re-send the query from the sidecar, we will drop the original request
+  unsigned char *message_bytes;
+  size_t message_bytes_size;
+  dns_message_to_bytes(message, &message_bytes, &message_bytes_size);
+
+  int fd;
+  create_generic_socket(ip_header->daddr, ((struct udphdr *) transport_header)->dest, &fd);
+  generic_send(fd, message_bytes, message_bytes_size);
+  log_info("re-sent the query from the sidecar");
+
+  // construct information to save
+  conn_info *connection = malloc(sizeof(conn_info));
+  connection->fd = fd;
+  connection->is_tcp = false;
+  connection->transport_header = malloc(sizeof(struct udphdr));
+  connection->iphdr = malloc(sizeof(struct iphdr));
+  memcpy(connection->transport_header, transport_header, sizeof(struct udphdr));
+  memcpy(connection->iphdr, ip_header, sizeof(struct iphdr));
+
+  // derive the key needed to save the above information
+  struct sockaddr_in sin;
+  memset(&sin, 0, sizeof(sin));
+  socklen_t len = sizeof(sin);
+
+  if (getsockname(fd, (struct sockaddr *) &sin, &len) == -1) {
+    log_error("couldn't get information that needs to be saved from the socket");
+    exit(-1);
+  }
+
+  unsigned char *question_bytes;
+  size_t question_bytes_size;
+  question_to_bytes(message->question_section[0], &question_bytes, &question_bytes_size);
+
+  uint64_t *question_hash_and_port = malloc(sizeof(uint64_t));
+  memset(question_hash_and_port, 0, sizeof(uint64_t));
+
+  uint32_t *question_hash_and_port_offset = (uint32_t *) question_hash_and_port;
+  *question_hash_and_port_offset = hash_16bit(question_bytes, question_bytes_size);
+  *(question_hash_and_port_offset + 1) = ntohs(sin.sin_port);
+
+  uintptr_t test;
+  if (hashmap_get(connection_info.map, question_hash_and_port, sizeof(uint64_t), (uintptr_t *)&test)) {
+    log_error("there's already a connection saved at this key, exiting");
+    exit(-1);
+  }
+
+  hashmap_set(connection_info.map, question_hash_and_port, sizeof(uint64_t), (uintptr_t)connection);
+  if (!hashmap_get(connection_info.map, question_hash_and_port, sizeof(uint64_t), (uintptr_t *)&connection)) {
+    log_error("failed to save connection information to memory, exiting");
+    exit(-1);
+  }
+
+  log_info("saved connection information for client that queried name: '%s'", message->question_section[0]->qname);
+  dns_message_destroy(&message);
 }
 
 void insert_into_state(ResourceRecord *rr, uint16_t *rrids, size_t *rrcount,
@@ -1294,45 +1283,50 @@ int internal_packet_filter_chain(
     DNSMessage *message,
     uint16_t destination_port
 ) {
-  if (is_dns_message_query(message)) {
-    printf(
-        "[pqc-dns-sidecar] received query from sidecar for name: '%s' which "
-        "was previously dropped.\n",
-        message->question_section[0]->qname);
-  } else {
-    printf(
-        "[pqc-dns-sidecar] received response to query for name: '%s' which "
-        "was previously dropped. Here's the DNS message for debugging.\n",
-        message->question_section[0]->qname);
+  if (message->qdcount != 1) {
+    log_error("qdcount should be one, exiting");
+    exit(-1);
   }
-  fflush(stdout);
-  size_t outbuff_len =
-      65355; // Need to account for large messages because of SPHINCS+
+
+  size_t outbuff_len = 65355; // Need to account for large messages because of SPHINCS+
   unsigned char outbuff[outbuff_len];
+
+  unsigned char *question_bytes;
+  size_t question_bytes_size;
+  question_to_bytes(message->question_section[0], &question_bytes, &question_bytes_size);
+
   uint64_t *question_hash_port = malloc(sizeof(uint64_t));
   memset(question_hash_port, 0, sizeof(uint64_t));
-  if (message->qdcount == 1) /* it should always be one */ {
-    unsigned char *qout;
-    size_t qout_size;
-    question_to_bytes(message->question_section[0], &qout, &qout_size);
-    uint32_t *question_hash = (uint32_t *)question_hash_port;
-    *question_hash = hash_16bit(qout, qout_size);
-    *(question_hash + 1) = destination_port;
-  } else {
-    assert(false);
-  }
-  if (handle_internal_packet(qh, id, iphdr, question_hash_port, outbuff,
-                             &outbuff_len, message->question_section[0]->qname) &&
-      destination_port != 53) {
-    conn_info *ci;
-    if (!hashmap_get(connection_info.map, question_hash_port,
-                     sizeof(uint64_t), (uintptr_t *)&ci)) {
-      printf("Failed to get ci\n");
-      fflush(stdout);
+
+  uint32_t *question_hash = (uint32_t *)question_hash_port;
+  *question_hash = hash_16bit(question_bytes, question_bytes_size);
+  *(question_hash + 1) = destination_port;
+
+  if (handle_internal_packet(
+          qh,
+          id,
+          iphdr,
+          question_hash_port,
+          outbuff,
+          &outbuff_len,
+          message->question_section[0]->qname)
+          && destination_port != 53) {
+
+    conn_info *connection;
+    if (!hashmap_get(connection_info.map, question_hash_port, sizeof(uint64_t), (uintptr_t *)&connection)) {
+      log_error("failed to find connection in memory, accepting anyway");
       return NF_ACCEPT;
     }
-    responding_thread_end(ci->iphdr, ci->transport_header, ci->is_tcp,
-                          outbuff, outbuff_len, question_hash_port, ci->fd);
+
+    responding_thread_end(
+      connection->iphdr,
+      connection->transport_header,
+      connection->is_tcp,
+      outbuff,
+      outbuff_len,
+      question_hash_port,
+      connection->fd
+    );
   } else {
     return NF_ACCEPT;
   }
@@ -1394,13 +1388,7 @@ uint32_t query_ingress_filter_chain(DNSMessage *message, struct iphdr *ip_header
     free(msgbytes);
     return NF_DROP;
   } else if (!OPT_SIDECAR_RESOLVER) {
-    printf("[pqc-dns-sidecar] received a query for name: '%s', dropping "
-           "query (we're gonna re-send it from the sidecar).\n",
-           message->question_section[0]->qname);
-    fflush(stdout);
-    DNSMessage *iquery;
-    construct_intermediate_message(message, &iquery);
-    responding_thread_start(iquery, ip_header, transport_header);
+    responding_thread_start(message, ip_header, transport_header);
     return NF_DROP;
   } else {
     printf("[pqc-dns-sidecar] received a query for name: '%s', "
