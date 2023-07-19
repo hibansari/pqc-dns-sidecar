@@ -298,7 +298,9 @@ bool hashmap_get(hashmap* m, void* key, size_t ksize, uintptr_t* out_val)
 	struct bucket* entry = find_entry(m, key, ksize, hash);
 
 	// if there is no match, output val will just be NULL
-	*out_val = entry->value;
+        if (out_val != NULL ) {
+                *out_val = entry->value;
+        }
 
 	return entry->key != NULL;
 }

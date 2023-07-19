@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.0)
 project(pqc-dns-sidecar)
 
 add_subdirectory(lib/hashmap)
+add_subdirectory(lib/logging)
 
 set(SOURCES
     src/daemon.c
@@ -24,12 +25,14 @@ set(HEADERS
 include_directories(
     include
     lib/hashmap/include
+    lib/logging/include
 )
 
 add_executable(pqc-dns-sidecar ${SOURCES} ${HEADERS})
 
 target_link_libraries(pqc-dns-sidecar PRIVATE
     hashmap
+    logging
     netfilter_queue
     m
 )
