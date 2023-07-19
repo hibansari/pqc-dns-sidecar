@@ -1303,6 +1303,10 @@ uint32_t process_dns_message(struct nfq_q_handle *qh, uint32_t id,
 
   uint32_t saddr = iphdr->saddr;
   uint32_t daddr = iphdr->daddr;
+  printf("src_ip = %u\n", saddr);
+  printf("dst_ip = %u\n", daddr);
+  printf("payload_length = %zu\n", payloadLen);
+
   uint16_t sport;
   uint16_t dport;
   if (is_tcp) {
@@ -1450,6 +1454,9 @@ uint32_t process_dns_message(struct nfq_q_handle *qh, uint32_t id,
           uint16_t rrid = rrf->rrid;
           uint32_t curidx = rrf->curidx;
           uint32_t fragsize = rrf->fragsize;
+          printf("rrid = %u\n", rrid);
+          printf("curidx = %u\n", curidx);
+          printf("fragsize = %u\n", fragsize);
           ResourceRecord *rr;
           if (!hashmap_get(responder_cache.map, &rrid, sizeof(uint16_t),
                            (uintptr_t *)&rr)) {
@@ -1578,6 +1585,7 @@ uint32_t process_packet(struct nfq_q_handle *qh, struct nfq_data *data,
 
   if (dst_ip == our_addr || src_ip == our_addr) {
     if (iphdr->protocol == IPPROTO_UDP) {
+      printf("UDP packet - process_udp\n");
       res = process_udp(qh, id, iphdr, payload, payload_length);
     } else {
       res = NF_ACCEPT;
@@ -1690,6 +1698,7 @@ int main() {
         printf("failed to receive a thing\n");
         return -1;
       }
+      printf("handling packet\n");
       nfq_handle_packet(h, buf, rv);
     }
   }
